@@ -5,7 +5,8 @@ from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton
 )
 from datetime import datetime, timedelta
-import json, os, random
+from flask import Flask, request
+import json, os, random, asyncio
 import firebase_admin
 from firebase_admin import credentials, firestore
 
@@ -87,8 +88,6 @@ love_phrases = [
     "я бы сейчас обнял тебя так крепко, чтобы ты почувствовала всё 💞",
     "с каждым днём люблю тебя всё сильнее 🌙",
     "ты — причина, почему я улыбаюсь даже ночью 💫",
-    "я помню наш первый вечер, каждое слово, каждую улыбку 💭",
-    "ты навсегда в моём сердце, Альонка 🤍",
 ]
 
 # -----------------------------------------
@@ -119,10 +118,7 @@ def bottom_menu():
         KeyboardButton("Пятница"), KeyboardButton("Суббота"),
         KeyboardButton("Воскресенье"),
     )
-    kb.row(
-        KeyboardButton("🎟 Купон на вредность"),
-        KeyboardButton("📊 Статус"),
-    )
+    kb.row(KeyboardButton("🎟 Купон на вредность"), KeyboardButton("📊 Статус"))
     kb.add(KeyboardButton("🤍 Я ЛЮБЛЮ ТЕБЯ 🤍"))
     return kb
 
@@ -172,12 +168,11 @@ async def cb_done(cq: types.CallbackQuery):
     st[f"{day}|{meal}"] = "✅"
     save_status(uid, st)
 
-    # Проверяем, все ли блюда отмечены
     total_meals = len(plan[day])
     eaten = sum(1 for m in plan[day] if st.get(f"{day}|{m}") == "✅")
     text = f"✅ Молодец, ты съела — {meal}!"
     if eaten == total_meals:
-        text += f"\n\nА вот твой заветный комплимент за то, что ты придерживалась 💌:\n“{random.choice(compliments)}”"
+        text += f"\n\n💌 Комплимент за идеальный день:\n“{random.choice(compliments)}”"
     await cq.message.edit_text(text, reply_markup=meal_kb(day, idx))
     await cq.answer("Отмечено ✅")
 
@@ -227,49 +222,49 @@ async def coupon(msg: types.Message):
     await msg.answer("🎟 Насладись этой вредностью, моя хорошая 🤍", reply_markup=bottom_menu())
 
 # -----------------------------------------
+# ▶️ Flask Webhook
+# -----------------------------------------
+app = Flask(__name__)
+
+@app.route("/webhook", methods=["POST"])
+def webhook_handler():
+    try:
+        update = request.get_json()
+        if not update:
+            return "no update", 200
+
+        from aiogram import types
+        bot.set_current(bot)
+        dp.set_current(dp)
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(dp.process_update(types.Update(**update)))
+        loop.close()
+
+        return "ok", 200
+    except Exception as e:
+        import traceback
+        print("❌ Ошибка в webhook:", e)
+        traceback.print_exc()
+        return "error", 500
+
+# -----------------------------------------
 # ▶️ Запуск Webhook (Koyeb)
 # -----------------------------------------
-from flask import Flask, request
-
 WEBHOOK_HOST = "https://superior-rebecca-guyse-55f11288.koyeb.app"
 WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 WEBAPP_HOST = "0.0.0.0"
 WEBAPP_PORT = int(os.environ.get("PORT", 8080))
 
-app = Flask(__name__)
-
-@app.route("/webhook", methods=["POST"])
-def webhook_handler():
-    update = request.json
-    from aiogram import types
-    import asyncio
-
-    if update:
-        bot.set_current(bot)
-        dp.set_current(dp)
-        asyncio.run(dp.process_update(types.Update(**update)))
-    return "OK", 200
-
-
-
 async def on_startup(dp):
     await bot.delete_webhook()
     await bot.set_webhook(WEBHOOK_URL)
     print("🚀 Webhook установлен и бот запущен!")
 
-async def on_shutdown(dp):
-    print("🛑 Отключаем webhook...")
-    await bot.delete_webhook()
-
-
 if __name__ == "__main__":
     print("✅ Health-check сервер запущен!")
-    import threading, asyncio
-    from aiogram import executor
-
-    def run_flask():
-        app.run(host=WEBAPP_HOST, port=WEBAPP_PORT)
-
-    threading.Thread(target=run_flask).start()
+    from threading import Thread
+    Thread(target=lambda: app.run(host=WEBAPP_HOST, port=WEBAPP_PORT)).start()
     asyncio.run(on_startup(dp))
