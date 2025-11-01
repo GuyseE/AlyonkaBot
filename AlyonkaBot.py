@@ -229,11 +229,26 @@ async def coupon(msg: types.Message):
 # -----------------------------------------
 # ▶️ Запуск Webhook (Koyeb)
 # -----------------------------------------
+from flask import Flask, request
+
 WEBHOOK_HOST = "https://superior-rebecca-guyse-55f11288.koyeb.app"
 WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 WEBAPP_HOST = "0.0.0.0"
 WEBAPP_PORT = int(os.environ.get("PORT", 8080))
+
+app = Flask(__name__)
+
+@app.route("/webhook", methods=["POST"])
+def webhook_handler():
+    update = request.json
+    from aiogram import types
+    from aiogram.utils import executor
+
+    if update:
+        asyncio.run(dp.process_update(types.Update(**update)))
+    return "OK", 200
+
 
 async def on_startup(dp):
     await bot.delete_webhook()
@@ -244,14 +259,14 @@ async def on_shutdown(dp):
     print("🛑 Отключаем webhook...")
     await bot.delete_webhook()
 
+
 if __name__ == "__main__":
     print("✅ Health-check сервер запущен!")
-    start_webhook(
-        dispatcher=dp,
-        webhook_path="/webhook",
-        on_startup=on_startup,
-        on_shutdown=on_shutdown,
-        skip_updates=True,
-        host="0.0.0.0",
-        port=int(os.environ.get("PORT", 8080)),
-    )
+    import threading, asyncio
+    from aiogram import executor
+
+    def run_flask():
+        app.run(host=WEBAPP_HOST, port=WEBAPP_PORT)
+
+    threading.Thread(target=run_flask).start()
+    asyncio.run(on_startup(dp))
