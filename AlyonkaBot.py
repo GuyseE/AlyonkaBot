@@ -1,71 +1,60 @@
 from aiogram import Bot, Dispatcher, types
-from aiogram.utils import executor
+from aiogram.utils.executor import start_webhook
 from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
     ReplyKeyboardMarkup, KeyboardButton
 )
 from datetime import datetime, timedelta
 from flask import Flask
-import threading
-import json, os, random
+import threading, os, random, json
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 # -----------------------------------------
-# 🔒 Безопасная загрузка токена
+# 🔐 Загрузка токена и Firebase
 # -----------------------------------------
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
     raise ValueError("❌ BOT_TOKEN не найден! Добавь его в переменные окружения на Koyeb.")
 
+cred = credentials.Certificate("firebase_key.json")
+firebase_admin.initialize_app(cred)
+db = firestore.client()
+
 bot = Bot(token=TOKEN)
 dp = Dispatcher(bot)
 
 # -----------------------------------------
-# 🗂 Хелперы для хранения данных
+# 🗂 Работа с Firestore
 # -----------------------------------------
-def _load(path, default):
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return default
+def get_user_doc(uid):
+    return db.collection("users").document(str(uid))
 
-def _save(path, data):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+def get_status(uid):
+    doc = get_user_doc(uid).get()
+    return doc.to_dict().get("status", {}) if doc.exists else {}
 
-def user_file(uid: int, stem: str) -> str:
-    return f"{stem}_{uid}.json"
+def save_status(uid, data):
+    get_user_doc(uid).set({"status": data}, merge=True)
 
-def get_status(uid: int) -> dict:
-    return _load(user_file(uid, "status"), {})
+def get_coupon(uid):
+    doc = get_user_doc(uid).get()
+    return doc.to_dict().get("coupon", {}) if doc.exists else {}
 
-def save_status(uid: int, data: dict):
-    _save(user_file(uid, "status"), data)
-
-def get_coupon(uid: int) -> dict:
-    return _load(user_file(uid, "coupon"), {})
-
-def save_coupon(uid: int, data: dict):
-    _save(user_file(uid, "coupon"), data)
+def save_coupon(uid, data):
+    get_user_doc(uid).set({"coupon": data}, merge=True)
 
 # -----------------------------------------
 # 📅 План питания
 # -----------------------------------------
-plan = _load("plan.json", {
-    "Воскресенье": [
-        "завтрак — омлет из одного яйца, сосиска варёная, 40 г гречки + огурчик",
-        "обед — рис и красная рыбка в сливках, на десерт яблочко",
-        "ужин — салат с курицей, 40 г пасты и сыром",
-    ],
-    "Понедельник": [
-        "завтрак — омлет из одного яйца + 1 белок, варёная сосиска, 40 г овсянки (на воде или овсяном молоке), немного банана",
-        "обед — картофельное пюре с куриным филе или индейкой, мягкие тушёные овощи, яблочко",
-        "ужин — рисовая лапша с курицей и мягкими овощами, чай ромашковый или мятный",
-    ],
-})
-edit_state = {}
+if os.path.exists("plan.json"):
+    with open("plan.json", "r", encoding="utf-8") as f:
+        plan = json.load(f)
+else:
+    plan = {}
 
 # -----------------------------------------
-# 💬 Комплименты (30)
+# 💬 Комплименты
 # -----------------------------------------
 compliments = [
     "Когда ты рядом, шо-то внутри просто стирается и начинается заново.",
@@ -126,7 +115,6 @@ def bottom_menu():
     )
     kb.row(
         KeyboardButton("🎟 Купон на вредность"),
-        KeyboardButton("📝 Редактировать план"),
         KeyboardButton("📊 Статус"),
     )
     kb.add(KeyboardButton("🤍 Я ЛЮБЛЮ ТЕБЯ 🤍"))
@@ -137,14 +125,6 @@ def meal_kb(day: str, idx: int):
     kb.add(
         InlineKeyboardButton("✅ Скушала", callback_data=f"done|{day}|{idx}"),
         InlineKeyboardButton("❌ Не кушала", callback_data=f"missed|{day}|{idx}"),
-    )
-    return kb
-
-def edit_day_kb(day: str):
-    kb = InlineKeyboardMarkup()
-    kb.add(
-        InlineKeyboardButton("➕ Добавить блюдо", callback_data=f"addmeal|{day}"),
-        InlineKeyboardButton("🗑 Удалить блюдо", callback_data=f"delmeal|{day}"),
     )
     return kb
 
@@ -160,61 +140,49 @@ async def love_btn(msg: types.Message):
     await msg.answer(random.choice(love_phrases))
 
 # -----------------------------------------
-# 🍽 Просмотр плана
+# 🍽 План питания
 # -----------------------------------------
 @dp.message_handler(lambda m: m.text and m.text.capitalize() in plan)
 async def show_day(msg: types.Message):
     day = msg.text.capitalize()
     meals = plan.get(day, [])
-    await msg.answer(f"🍽 План на {day}:", reply_markup=bottom_menu())
     if not meals:
-        await msg.answer("Пока шо ничо нема 😇")
+        await msg.answer(f"На {day} пока нет блюд 😇", reply_markup=bottom_menu())
         return
+
     st = get_status(msg.from_user.id)
+    await msg.answer(f"🍽 План на {day}:")
     for i, meal in enumerate(meals):
         mark = st.get(f"{day}|{meal}", "")
         prefix = "✅" if mark == "✅" else "❌" if mark == "❌" else "•"
         await msg.answer(f"{prefix} {meal}", reply_markup=meal_kb(day, i))
 
 # ✅ / ❌ отметки
-@dp.callback_query_handler(lambda c: c.data.startswith("done"))
-async def cb_done(cq: types.CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data.startswith(("done", "missed")))
+async def cb_meal(cq: types.CallbackQuery):
     uid = cq.from_user.id
-    _, day, idx = cq.data.split("|")
+    action, day, idx = cq.data.split("|")
     idx = int(idx)
     meal = plan[day][idx]
 
     st = get_status(uid)
-    st[f"{day}|{meal}"] = "✅"
+    st[f"{day}|{meal}"] = "✅" if action == "done" else "❌"
     save_status(uid, st)
 
-    meals_today = plan.get(day, [])
-    done_meals = [m for m in meals_today if st.get(f"{day}|{m}") == "✅"]
+    if action == "done":
+        await cq.message.edit_text(f"✅ Молодец, ты съела — {meal}!\n\n{random.choice(compliments)}",
+                                   reply_markup=meal_kb(day, idx))
+    else:
+        await cq.message.edit_text(f"❌ Ты пропустила... Но я всё равно дуже люблю тебя 🤍",
+                                   reply_markup=meal_kb(day, idx))
 
-    # если всё съедено — заветный комплимент
-    if len(done_meals) == len(meals_today) and len(meals_today) > 0:
-        compliment = random.choice(compliments)
-        await cq.message.answer(
-            f"💖 А вот твой заветный комплимент за то, что ты придерживалась дня ({day}):\n\n«{compliment}»"
-        )
+    # Проверка дня — если всё выполнено
+    meals_today = [f"{day}|{m}" for m in plan[day]]
+    marks = [st.get(m, "") for m in meals_today]
+    if all(m == "✅" for m in marks if m):
+        await bot.send_message(uid, f"🌸 А вот твой заветный комплимент за то, что ты придерживалась дня:\n\n«{random.choice(compliments)}»")
 
-    await cq.message.edit_text(
-        f"✅ Молодец, ты съела — {meal}!\n\n{random.choice(compliments)}",
-        reply_markup=meal_kb(day, idx)
-    )
-    await cq.answer("Отмечено ✅")
-
-@dp.callback_query_handler(lambda c: c.data.startswith("missed"))
-async def cb_missed(cq: types.CallbackQuery):
-    uid = cq.from_user.id
-    _, day, idx = cq.data.split("|")
-    idx = int(idx)
-    meal = plan[day][idx]
-    st = get_status(uid)
-    st[f"{day}|{meal}"] = "❌"
-    save_status(uid, st)
-    await cq.message.edit_text(f"❌ Ты пропустила!! Надо НАКАЗАТЬ....) Но я все равно дуже люблю тебя 🤍", reply_markup=meal_kb(day, idx))
-    await cq.answer("Отмечено ❌")
+    await cq.answer("Отмечено!")
 
 # -----------------------------------------
 # 📊 Статус
@@ -223,16 +191,13 @@ async def cb_missed(cq: types.CallbackQuery):
 async def show_status(msg: types.Message):
     uid = msg.from_user.id
     st = get_status(uid)
-    items = []
-    for key, mark in st.items():
-        day, meal = key.split("|", 1)
-        if day in plan and meal in plan[day]:
-            items.append((day, meal, mark))
-    if not items:
+    if not st:
         await msg.answer("Пока нет отметок 😇", reply_markup=bottom_menu())
         return
+
     text = "📋 <b>Статус:</b>\n"
-    for day, meal, mark in items:
+    for key, mark in st.items():
+        day, meal = key.split("|", 1)
         text += f"{day} — {meal}: {mark}\n"
     await msg.answer(text, parse_mode="HTML", reply_markup=bottom_menu())
 
@@ -247,29 +212,37 @@ async def coupon(msg: types.Message):
     if "last" in data:
         last = datetime.fromisoformat(data["last"])
         if now - last < timedelta(days=7):
-            await msg.answer(f"❌ Купон уже активирован ( йолки палки надо ждать 7 дн )", reply_markup=bottom_menu())
+            await msg.answer("❌ Купон уже активирован (йолки палки, надо ждать 7 дн 😅)", reply_markup=bottom_menu())
             return
     data["last"] = now.isoformat()
     save_coupon(uid, data)
     await msg.answer("🎟 Насладись этим купоном! 🍫\nТы заслужила 🤍", reply_markup=bottom_menu())
 
 # -----------------------------------------
-# 🌐 Keep Alive сервер
+# 🌐 Webhook для Koyeb
 # -----------------------------------------
-app = Flask(__name__)
+WEBHOOK_HOST = "https://alyonkabot-username.koyeb.app"  # ← замени на свой домен!
+WEBHOOK_PATH = f"/{TOKEN}"
+WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
+WEBAPP_HOST = "0.0.0.0"
+WEBAPP_PORT = int(os.environ.get("PORT", 8080))
 
-@app.route('/')
-def home():
-    return "Bot is alive!", 200
+async def on_startup(dp):
+    await bot.set_webhook(WEBHOOK_URL)
+    print("🚀 Webhook установлен и бот запущен!")
 
-def run_flask():
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+async def on_shutdown(dp):
+    await bot.delete_webhook()
+    print("🛑 Webhook удалён.")
 
-threading.Thread(target=run_flask).start()
-
-# -----------------------------------------
-# ▶️ Запуск
-# -----------------------------------------
 if __name__ == "__main__":
-    print("🚀 Бот запущен и работает 24/7")
-    executor.start_polling(dp)
+    from aiogram.utils.executor import start_webhook
+    start_webhook(
+        dispatcher=dp,
+        webhook_path=WEBHOOK_PATH,
+        on_startup=on_startup,
+        on_shutdown=on_shutdown,
+        skip_updates=True,
+        host=WEBAPP_HOST,
+        port=WEBAPP_PORT,
+    )
