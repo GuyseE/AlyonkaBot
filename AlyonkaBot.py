@@ -243,11 +243,14 @@ app = Flask(__name__)
 def webhook_handler():
     update = request.json
     from aiogram import types
-    from aiogram.utils import executor
+    import asyncio
 
     if update:
+        bot.set_current(bot)
+        dp.set_current(dp)
         asyncio.run(dp.process_update(types.Update(**update)))
     return "OK", 200
+
 
 
 async def on_startup(dp):
