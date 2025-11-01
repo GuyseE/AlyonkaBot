@@ -5,7 +5,7 @@ from aiogram.types import (
 )
 from aiogram.utils.executor import start_webhook
 from datetime import datetime, timedelta
-import os, json, random, asyncio
+import os, json, random
 import firebase_admin
 from firebase_admin import credentials, firestore
 from aiohttp import web
@@ -51,7 +51,13 @@ if os.path.exists("plan.json"):
     with open("plan.json", "r", encoding="utf-8") as f:
         plan = json.load(f)
 else:
-    plan = {}
+    plan = {
+        "Понедельник": [
+            "завтрак — омлет с сосиской и гречкой",
+            "обед — картофельное пюре с курицей",
+            "ужин — рисовая лапша с овощами",
+        ]
+    }
 
 # -----------------------------------------
 # 💬 Комплименты
@@ -176,7 +182,7 @@ async def cb_meal(cq: types.CallbackQuery):
         await cq.message.edit_text(f"❌ Ты пропустила... Но я всё равно дуже люблю тебя 🤍",
                                    reply_markup=meal_kb(day, idx))
 
-    # Проверка — все ли съела сегодня
+    # Если день полностью выполнен — комплимент
     meals_today = [f"{day}|{m}" for m in plan[day]]
     marks = [st.get(m, "") for m in meals_today]
     if all(m == "✅" for m in marks if m):
@@ -219,9 +225,9 @@ async def coupon(msg: types.Message):
     await msg.answer("🎟 Насладись этим купоном! 🍫\nТы заслужила 🤍", reply_markup=bottom_menu())
 
 # -----------------------------------------
-# 🌐 Webhook и Health-check
+# 🌐 Webhook + Health-check
 # -----------------------------------------
-WEBHOOK_HOST = "https://alyonkabot-username.koyeb.app"  # ⚠️ замени на свой домен из Koyeb!
+WEBHOOK_HOST = "https://superior-rebecca-guyse-55f11288.koyeb.app/"  # ⚠️ замени на свой домен из Koyeb!
 WEBHOOK_PATH = f"/{TOKEN}"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 WEBAPP_HOST = "0.0.0.0"
@@ -235,25 +241,15 @@ async def on_shutdown(dp):
     await bot.delete_webhook()
     print("🛑 Webhook удалён.")
 
-# 🔹 Health-check сервер
-async def handle_root(request):
+# Health-check для Koyeb
+async def health(request):
     return web.Response(text="Bot is alive!", status=200)
 
-async def run_healthcheck():
-    app = web.Application()
-    app.router.add_get("/", handle_root)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", WEBAPP_PORT)
-    await site.start()
-    print("✅ Health-check сервер запущен!")
-
-asyncio.get_event_loop().create_task(run_healthcheck())
-
-# -----------------------------------------
-# ▶️ Запуск
-# -----------------------------------------
 if __name__ == "__main__":
+    from aiogram.utils.executor import Executor
+    executor = Executor(dp)
+    executor._web_app.router.add_get("/", health)
+
     start_webhook(
         dispatcher=dp,
         webhook_path=WEBHOOK_PATH,
