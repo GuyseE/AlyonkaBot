@@ -183,10 +183,25 @@ async def cb_done(cq: types.CallbackQuery):
     _, day, idx = cq.data.split("|")
     idx = int(idx)
     meal = plan[day][idx]
+
     st = get_status(uid)
     st[f"{day}|{meal}"] = "✅"
     save_status(uid, st)
-    await cq.message.edit_text(f"✅ Молодец, ты съела — {meal}!\n\n{random.choice(compliments)}", reply_markup=meal_kb(day, idx))
+
+    meals_today = plan.get(day, [])
+    done_meals = [m for m in meals_today if st.get(f"{day}|{m}") == "✅"]
+
+    # если всё съедено — заветный комплимент
+    if len(done_meals) == len(meals_today) and len(meals_today) > 0:
+        compliment = random.choice(compliments)
+        await cq.message.answer(
+            f"💖 А вот твой заветный комплимент за то, что ты придерживалась дня ({day}):\n\n«{compliment}»"
+        )
+
+    await cq.message.edit_text(
+        f"✅ Молодец, ты съела — {meal}!\n\n{random.choice(compliments)}",
+        reply_markup=meal_kb(day, idx)
+    )
     await cq.answer("Отмечено ✅")
 
 @dp.callback_query_handler(lambda c: c.data.startswith("missed"))
@@ -239,12 +254,7 @@ async def coupon(msg: types.Message):
     await msg.answer("🎟 Насладись этим купоном! 🍫\nТы заслужила 🤍", reply_markup=bottom_menu())
 
 # -----------------------------------------
-# 📝 Редактирование плана
-# -----------------------------------------
-# (остальной код редактирования остаётся тем же, как у тебя)
-
-# -----------------------------------------
-# 🌐 Keep Alive сервер (для Koyeb)
+# 🌐 Keep Alive сервер
 # -----------------------------------------
 app = Flask(__name__)
 
