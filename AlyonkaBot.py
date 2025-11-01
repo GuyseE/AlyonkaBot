@@ -230,7 +230,7 @@ async def coupon(msg: types.Message):
 # ▶️ Запуск Webhook (Koyeb)
 # -----------------------------------------
 WEBHOOK_HOST = "https://superior-rebecca-guyse-55f11288.koyeb.app"
-WEBHOOK_PATH = f"/{TOKEN}"
+WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 WEBAPP_HOST = "0.0.0.0"
 WEBAPP_PORT = int(os.environ.get("PORT", 8080))
@@ -248,10 +248,10 @@ if __name__ == "__main__":
     print("✅ Health-check сервер запущен!")
     start_webhook(
         dispatcher=dp,
-        webhook_path=WEBHOOK_PATH,
+        webhook_path="/webhook",
         on_startup=on_startup,
         on_shutdown=on_shutdown,
         skip_updates=True,
-        host=WEBAPP_HOST,
-        port=WEBAPP_PORT,
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 8080)),
     )
