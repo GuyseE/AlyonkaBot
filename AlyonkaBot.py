@@ -1,17 +1,17 @@
 from aiogram import Bot, Dispatcher, types
-from aiogram.utils.executor import start_webhook
 from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
     ReplyKeyboardMarkup, KeyboardButton
 )
+from aiogram.utils.executor import start_webhook
 from datetime import datetime, timedelta
-from flask import Flask
-import threading, os, random, json
+import os, json, random, asyncio
 import firebase_admin
 from firebase_admin import credentials, firestore
+from aiohttp import web
 
 # -----------------------------------------
-# 🔐 Загрузка токена и Firebase
+# 🔐 Безопасная загрузка токена и Firebase
 # -----------------------------------------
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
@@ -176,7 +176,7 @@ async def cb_meal(cq: types.CallbackQuery):
         await cq.message.edit_text(f"❌ Ты пропустила... Но я всё равно дуже люблю тебя 🤍",
                                    reply_markup=meal_kb(day, idx))
 
-    # Проверка дня — если всё выполнено
+    # Проверка — все ли съела сегодня
     meals_today = [f"{day}|{m}" for m in plan[day]]
     marks = [st.get(m, "") for m in meals_today]
     if all(m == "✅" for m in marks if m):
@@ -219,9 +219,9 @@ async def coupon(msg: types.Message):
     await msg.answer("🎟 Насладись этим купоном! 🍫\nТы заслужила 🤍", reply_markup=bottom_menu())
 
 # -----------------------------------------
-# 🌐 Webhook для Koyeb
+# 🌐 Webhook и Health-check
 # -----------------------------------------
-WEBHOOK_HOST = "https://alyonkabot-username.koyeb.app"  # ← замени на свой домен!
+WEBHOOK_HOST = "https://alyonkabot-username.koyeb.app"  # ⚠️ замени на свой домен из Koyeb!
 WEBHOOK_PATH = f"/{TOKEN}"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 WEBAPP_HOST = "0.0.0.0"
@@ -235,8 +235,25 @@ async def on_shutdown(dp):
     await bot.delete_webhook()
     print("🛑 Webhook удалён.")
 
+# 🔹 Health-check сервер
+async def handle_root(request):
+    return web.Response(text="Bot is alive!", status=200)
+
+async def run_healthcheck():
+    app = web.Application()
+    app.router.add_get("/", handle_root)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", WEBAPP_PORT)
+    await site.start()
+    print("✅ Health-check сервер запущен!")
+
+asyncio.get_event_loop().create_task(run_healthcheck())
+
+# -----------------------------------------
+# ▶️ Запуск
+# -----------------------------------------
 if __name__ == "__main__":
-    from aiogram.utils.executor import start_webhook
     start_webhook(
         dispatcher=dp,
         webhook_path=WEBHOOK_PATH,
