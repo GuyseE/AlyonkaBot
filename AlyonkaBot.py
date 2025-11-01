@@ -1,14 +1,13 @@
 from aiogram import Bot, Dispatcher, types
-from aiogram.utils.executor import start_webhook
 from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
     ReplyKeyboardMarkup, KeyboardButton
 )
 from datetime import datetime, timedelta
 from flask import Flask, request
-import json, os, random, asyncio
 import firebase_admin
 from firebase_admin import credentials, firestore
+import os, random, asyncio, threading
 
 # -----------------------------------------
 # 🔒 Безопасная загрузка токена
@@ -18,7 +17,7 @@ if not TOKEN:
     raise ValueError("❌ BOT_TOKEN не найден! Добавь его в переменные окружения на Koyeb.")
 
 # -----------------------------------------
-# 🔥 Подключение к Firebase
+# 🔥 Подключение Firebase
 # -----------------------------------------
 cred = credentials.Certificate("firebase_key.json")
 firebase_admin.initialize_app(cred)
@@ -26,22 +25,6 @@ db = firestore.client()
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(bot)
-
-# -----------------------------------------
-# 📅 План питания
-# -----------------------------------------
-plan = {
-    "Воскресенье": [
-        "завтрак — омлет из одного яйца, сосиска варёная, 40 г гречки + огурчик",
-        "обед — рис и красная рыбка в сливках, на десерт яблочко",
-        "ужин — салат с курицей, 40 г пасты и сыром",
-    ],
-    "Понедельник": [
-        "завтрак — омлет из одного яйца + 1 белок, варёная сосиска, 40 г овсянки (на воде или овсяном молоке), немного банана",
-        "обед — картофельное пюре с куриным филе или индейкой, мягкие тушёные овощи, яблочко",
-        "ужин — рисовая лапша с курицей и мягкими овощами, чай ромашковый или мятный",
-    ],
-}
 
 # -----------------------------------------
 # 💬 Комплименты
@@ -91,6 +74,22 @@ love_phrases = [
 ]
 
 # -----------------------------------------
+# 📅 План питания
+# -----------------------------------------
+plan = {
+    "Воскресенье": [
+        "завтрак — омлет из одного яйца, сосиска варёная, 40 г гречки + огурчик",
+        "обед — рис и красная рыбка в сливках, на десерт яблочко",
+        "ужин — салат с курицей, 40 г пасты и сыром",
+    ],
+    "Понедельник": [
+        "завтрак — омлет из одного яйца + 1 белок, варёная сосиска, 40 г овсянки (на воде или овсяном молоке), немного банана",
+        "обед — картофельное пюре с куриным филе или индейкой, мягкие тушёные овощи, яблочко",
+        "ужин — рисовая лапша с курицей и мягкими овощами, чай ромашковый или мятный",
+    ],
+}
+
+# -----------------------------------------
 # 🗂 Firebase функции
 # -----------------------------------------
 def get_status(uid):
@@ -108,15 +107,14 @@ def save_coupon(uid, data):
     db.collection("coupons").document(str(uid)).set(data)
 
 # -----------------------------------------
-# 🎛 Кнопки
+# Кнопки
 # -----------------------------------------
 def bottom_menu():
-    kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=4)
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add(
         KeyboardButton("Понедельник"), KeyboardButton("Вторник"),
         KeyboardButton("Среда"), KeyboardButton("Четверг"),
-        KeyboardButton("Пятница"), KeyboardButton("Суббота"),
-        KeyboardButton("Воскресенье"),
+        KeyboardButton("Пятница"), KeyboardButton("Суббота"), KeyboardButton("Воскресенье"),
     )
     kb.row(KeyboardButton("🎟 Купон на вредность"), KeyboardButton("📊 Статус"))
     kb.add(KeyboardButton("🤍 Я ЛЮБЛЮ ТЕБЯ 🤍"))
@@ -131,7 +129,7 @@ def meal_kb(day, idx):
     return kb
 
 # -----------------------------------------
-# 🚀 Команды
+# Хэндлеры
 # -----------------------------------------
 @dp.message_handler(commands=["start", "меню"])
 async def cmd_start(msg: types.Message):
@@ -141,17 +139,10 @@ async def cmd_start(msg: types.Message):
 async def love_btn(msg: types.Message):
     await msg.answer(random.choice(love_phrases))
 
-# -----------------------------------------
-# 🍽 Просмотр плана
-# -----------------------------------------
 @dp.message_handler(lambda m: m.text and m.text.capitalize() in plan)
 async def show_day(msg: types.Message):
     day = msg.text.capitalize()
     meals = plan.get(day, [])
-    await msg.answer(f"🍽 План на {day}:", reply_markup=bottom_menu())
-    if not meals:
-        await msg.answer("Пока шо ничо нема 😇")
-        return
     st = get_status(msg.from_user.id)
     for i, meal in enumerate(meals):
         mark = st.get(f"{day}|{meal}", "")
@@ -167,7 +158,6 @@ async def cb_done(cq: types.CallbackQuery):
     st = get_status(uid)
     st[f"{day}|{meal}"] = "✅"
     save_status(uid, st)
-
     total_meals = len(plan[day])
     eaten = sum(1 for m in plan[day] if st.get(f"{day}|{m}") == "✅")
     text = f"✅ Молодец, ты съела — {meal}!"
@@ -189,82 +179,38 @@ async def cb_missed(cq: types.CallbackQuery):
     await cq.answer("Отмечено ❌")
 
 # -----------------------------------------
-# 📊 Статус
-# -----------------------------------------
-@dp.message_handler(lambda m: m.text == "📊 Статус")
-async def show_status(msg: types.Message):
-    uid = msg.from_user.id
-    st = get_status(uid)
-    if not st:
-        await msg.answer("Пока нет отметок 😇", reply_markup=bottom_menu())
-        return
-    text = "📋 <b>Статус:</b>\n"
-    for key, mark in st.items():
-        day, meal = key.split("|", 1)
-        text += f"{day} — {meal}: {mark}\n"
-    await msg.answer(text, parse_mode="HTML", reply_markup=bottom_menu())
-
-# -----------------------------------------
-# 🎟 Купон
-# -----------------------------------------
-@dp.message_handler(lambda m: m.text == "🎟 Купон на вредность")
-async def coupon(msg: types.Message):
-    uid = msg.from_user.id
-    data = get_coupon(uid)
-    now = datetime.now()
-    if "last" in data:
-        last = datetime.fromisoformat(data["last"])
-        if now - last < timedelta(days=7):
-            await msg.answer("❌ Купон уже активирован (жди 7 дней 😜)", reply_markup=bottom_menu())
-            return
-    data["last"] = now.isoformat()
-    save_coupon(uid, data)
-    await msg.answer("🎟 Насладись этой вредностью, моя хорошая 🤍", reply_markup=bottom_menu())
-
-# -----------------------------------------
-# ▶️ Flask Webhook
+# Flask Webhook
 # -----------------------------------------
 app = Flask(__name__)
 
 @app.route("/webhook", methods=["POST"])
-def webhook_handler():
-    try:
-        update = request.get_json()
-        if not update:
-            return "no update", 200
+def webhook():
+    update = request.get_json()
+    if not update:
+        return "no update", 200
 
-        from aiogram import types
-        bot.set_current(bot)
-        dp.set_current(dp)
+    from aiogram import types
+    asyncio.run(process_update(update))
+    return "ok", 200
 
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(dp.process_update(types.Update(**update)))
-        loop.close()
-
-        return "ok", 200
-    except Exception as e:
-        import traceback
-        print("❌ Ошибка в webhook:", e)
-        traceback.print_exc()
-        return "error", 500
+async def process_update(update):
+    bot.set_current(bot)
+    dp.set_current(dp)
+    await dp.process_update(types.Update(**update))
 
 # -----------------------------------------
-# ▶️ Запуск Webhook (Koyeb)
+# Запуск
 # -----------------------------------------
 WEBHOOK_HOST = "https://superior-rebecca-guyse-55f11288.koyeb.app"
 WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
-WEBAPP_HOST = "0.0.0.0"
-WEBAPP_PORT = int(os.environ.get("PORT", 8080))
 
-async def on_startup(dp):
+async def on_startup():
     await bot.delete_webhook()
     await bot.set_webhook(WEBHOOK_URL)
     print("🚀 Webhook установлен и бот запущен!")
 
 if __name__ == "__main__":
     print("✅ Health-check сервер запущен!")
-    from threading import Thread
-    Thread(target=lambda: app.run(host=WEBAPP_HOST, port=WEBAPP_PORT)).start()
-    asyncio.run(on_startup(dp))
+    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))).start()
+    asyncio.run(on_startup())
