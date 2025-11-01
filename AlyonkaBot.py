@@ -179,21 +179,21 @@ async def cb_missed(cq: types.CallbackQuery):
     await cq.answer("Отмечено ❌")
 
 # -----------------------------------------
-# Flask Webhook
+# Flask Webhook (исправленная версия)
 # -----------------------------------------
 app = Flask(__name__)
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
     update = request.get_json()
     if not update:
         return "no update", 200
-
-    from aiogram import types
-    asyncio.run(process_update(update))
+    loop.create_task(process_update_async(update))
     return "ok", 200
 
-async def process_update(update):
+async def process_update_async(update):
     bot.set_current(bot)
     dp.set_current(dp)
     await dp.process_update(types.Update(**update))
@@ -213,4 +213,5 @@ async def on_startup():
 if __name__ == "__main__":
     print("✅ Health-check сервер запущен!")
     threading.Thread(target=lambda: app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))).start()
-    asyncio.run(on_startup())
+    loop.create_task(on_startup())
+    loop.run_forever()
